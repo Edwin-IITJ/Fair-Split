@@ -60,10 +60,16 @@ IMPORTANT: Do NOT compute arithmetic yourself. Extract the structured data and r
   "flags_raw": ["any issues noticed like unmatched items, payer not mentioned, etc."]
 }
 
+ITEM AMOUNTS: Use the amounts exactly as printed next to each line item on the receipt.
+Some Indian GST receipts print tax-inclusive amounts per item (the item row total already
+includes CGST/SGST). Do NOT adjust them — the server detects and handles this automatically.
+Set `subtotal` to the printed pre-tax field (e.g. "Item Value") if one is shown separately;
+otherwise use the sum of item amounts.
+Set `tax` to the total of all tax lines (CGST + SGST + IGST, etc.) shown on the bill.
+
 If payer is not mentioned in the description, set paid_by to null and add a flag.
 If an item mentioned in description is not on the bill, add a flag.
 If description mentions ambiguous groups like "rest of us" or "everyone else", resolve them and note in flags_raw what assumption you made.
-If the bill items don't sum to the printed subtotal, add a flag.
 
 Return ONLY valid JSON. No markdown, no explanation."""
 
@@ -86,10 +92,43 @@ def compute_split(data: dict) -> dict:
     grand_total = bill.get("grand_total", subtotal + service + tax - discount)
     round_off = bill.get("round_off", 0)
 
-    # Validate items sum
+    # -----------------------------------------------------------------------
+    # Detect tax-inclusive item prices.
+    #
+    # Some Indian GST receipts (e.g. sweet shops, bakeries) print per-item
+    # amounts that already include CGST/SGST, so sum(items) == grand_total.
+    # If we then add the separately-listed tax on top we double-count it,
+    # causing a large negative rounding correction.
+    #
+    # Detection: if sum(items) is within ₹1 of grand_total AND the receipt
+    # also carries a non-zero tax figure AND sum(items) > subtotal, the item
+    # prices are tax-inclusive and we must NOT add tax again.
+    # -----------------------------------------------------------------------
     extracted_sum = sum(items.values())
-    if abs(extracted_sum - subtotal) > 1:
-        flags.append(f"Extracted line items sum to ₹{extracted_sum} but printed subtotal is ₹{subtotal} — ₹{abs(extracted_sum - subtotal):.0f} unexplained")
+    tax_inclusive = (
+        (tax > 0 or service > 0)
+        and abs(extracted_sum - grand_total) <= 1
+        and extracted_sum > subtotal + 0.5
+    )
+
+    if tax_inclusive:
+        effective_tax = 0.0
+        effective_service = 0.0
+        assumptions.append(
+            f"Receipt item prices are tax-inclusive (items sum ₹{extracted_sum:.0f} "
+            f"= grand total ₹{grand_total:.0f}). "
+            f"Tax ₹{tax:.0f} (CGST+SGST) is already embedded in item prices "
+            f"and is not added again to avoid double-counting."
+        )
+    else:
+        effective_tax = tax
+        effective_service = service
+        # Only flag the items-vs-subtotal mismatch in the normal (pre-tax items) case
+        if abs(extracted_sum - subtotal) > 1:
+            flags.append(
+                f"Extracted line items sum to ₹{extracted_sum:.0f} but printed "
+                f"subtotal is ₹{subtotal:.2f} — ₹{abs(extracted_sum - subtotal):.0f} unexplained"
+            )
 
     # Build per-person subtotals
     person_subtotals = {p: 0.0 for p in people}
@@ -119,8 +158,8 @@ def compute_split(data: dict) -> dict:
     person_totals = {}
     for person in person_subtotals:
         ratio = person_subtotals[person] / total_subtotal if total_subtotal > 0 else 0
-        tax_share = tax * ratio
-        service_share = service * ratio
+        tax_share = effective_tax * ratio
+        service_share = effective_service * ratio
         discount_share = -discount * ratio
         raw_total = person_subtotals[person] + tax_share + service_share + discount_share
         person_totals[person] = {
