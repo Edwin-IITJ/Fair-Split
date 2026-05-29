@@ -1,98 +1,110 @@
-# Fair Split — Restaurant Bill Splitter
-
-A tool that takes a receipt image + plain-English description of who had what, and returns a fully-reconciled per-person split including tax, service charge, discounts, and a settle-up.
+# Fair Split - Architecture and API Reference
 
 ## Architecture
 
 ```
 Frontend (fair-split.html)
-    └── POST /split (JSON: receipt_base64 + description)
-              ↓
-        FastAPI Backend (main.py)
-              ↓
-        Gemini 2.0 Flash (Vision + NLP)
-        → Extracts: items, assignments, people, bill totals
-              ↓
-        Python arithmetic engine
-        → Computes: proportional tax/service/discount per person
-        → Validates: reconciliation, flags mismatches
-              ↓
-        Returns exact output JSON schema
+    POST /split  {receipt_base64, description}
+          |
+    FastAPI  /split endpoint
+          |
+    Gemini 2.5 Flash: vision OCR + NLP
+    Extracts structured JSON: items, assignments, people, bill totals
+          |
+    compute_split() in main.py
+    - per-person subtotals from item assignments
+    - proportional tax/service/discount
+    - rounding correction
+    - settle-up computation
+    - reconciliation check
+          |
+    Response JSON
 ```
 
-**Key decision:** The LLM only does structured data extraction (OCR + NLP). All arithmetic is Python.
+**Key decision:** The LLM extracts structured data; Python computes all arithmetic. This prevents hallucinated totals and makes every result reproducible.
 
-## Local Setup
+## Local setup
 
 ```bash
-# 1. Clone / navigate to project directory
-cd fair-split/project
-
-# 2. Install dependencies
+# 1. Install dependencies
 pip install -r requirements.txt
 
-# 3. Set your Gemini API key
-export GEMINI_API_KEY="your_key_here"
+# 2. Set your Gemini API key
+echo "GEMINI_API_KEY=your_key_here" > .env.local
 
-# 4. Start the server
+# 3. Start the server
 uvicorn main:app --reload --port 8000
 
-# 5. Open fair-split.html in your browser
-# Set the endpoint to: http://localhost:8000/split
+# 4. Open fair-split.html in a browser
+#    Set the endpoint field to: http://localhost:8000/split
 ```
 
-## Deploy to Render.com (Free)
+## Deploy to Render
 
-1. Push this folder to a GitHub repo
-2. Go to render.com → New Web Service → Connect repo
+1. Push this folder to a GitHub repo.
+2. Render dashboard: New Web Service, connect repo.
 3. Build command: `pip install -r requirements.txt`
 4. Start command: `uvicorn main:app --host 0.0.0.0 --port $PORT`
-5. Add environment variable: `GEMINI_API_KEY = <your key>`
-6. Deploy!
-7. Update the endpoint in `fair-split.html` to your Render URL
+5. Environment variable: `GEMINI_API_KEY = <your key>`
+6. After deploy, update the endpoint field in `fair-split.html` to your Render URL.
 
-## Deploy to Railway.app
+## Deploy to Railway
 
 ```bash
 railway login
 railway init
-railway add
 railway up
 railway variables set GEMINI_API_KEY=your_key
 ```
 
-## API Contract
+## API contract
 
-**POST /split**
+### POST /split
+
+Request body:
+
 ```json
 {
-  "receipt_base64": "<base64 encoded image, no data-URI prefix>",
-  "description": "<plain English who-had-what string>"
+  "receipt_base64": "<base64-encoded image bytes, no data-URI prefix>",
+  "description": "<plain-English who-had-what string>"
 }
 ```
 
-**Response:**
+Response:
+
 ```json
 {
   "per_person": [
-    {"name": "Ravi", "items": ["Cappuccino", "Grilled Chicken Sandwich"], "subtotal": 440, "tax_share": 23, "service_share": 22, "discount_share": 0, "total": 485}
+    {
+      "name": "Ravi",
+      "items": ["Cappuccino", "Grilled Chicken Sandwich"],
+      "subtotal": 440,
+      "tax_share": 23,
+      "service_share": 22,
+      "discount_share": 0,
+      "total": 485
+    }
   ],
   "grand_total": 1147,
-  "reconciliation": {"sum_of_person_totals": 1147, "matches_bill": true},
+  "reconciliation": { "sum_of_person_totals": 1147, "matches_bill": true },
   "paid_by": "Sameer",
-  "settle_up": [{"from": "Ravi", "to": "Sameer", "amount": 485}],
-  "assumptions": ["Sameer absorbs ₹1 rounding difference"],
+  "settle_up": [{ "from": "Ravi", "to": "Sameer", "amount": 485 }],
+  "assumptions": ["Sameer absorbs Rs.1 rounding difference"],
   "flags": []
 }
 ```
 
-## Sample Receipts
+The `reconciliation`, `assumptions`, and `flags` fields are always present. `flags` contains anything the system could not resolve cleanly. Nothing is silently guessed.
 
-See R1–R4 in the assignment PDF. All four receipts pass reconciliation.
+### GET /health
+
+Returns `{"status": "ok"}`. Used by Render/Railway for uptime checks.
 
 ## Deliverables
 
-1. ✅ `fair-split.html` — Frontend (upload image, paste description, see result)
-2. ✅ `main.py` — FastAPI backend with Gemini Vision integration
-3. ✅ `PROMPT_LOG.md` — Prompt iteration log + arithmetic decision
-4. ✅ `EDGE_CASES.md` — 15 edge cases considered with verification status
+| File | Description |
+|---|---|
+| `fair-split.html` | Frontend: upload image, paste description, review and edit assignments, see result |
+| `main.py` | FastAPI backend with Gemini Vision integration and arithmetic engine |
+| `Documentation/PROMPT_LOG.md` | Prompt iteration log and arithmetic decision rationale |
+| `Documentation/EDGE_CASES.md` | Edge cases considered with handling approach |
