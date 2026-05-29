@@ -514,11 +514,42 @@
       color: var(--color-text-faint);
     }
 
+    /* Preview wrapper — relative so the clear button can sit in the corner */
+    .dz-preview-wrap {
+      position: relative;
+      display: inline-flex;
+    }
+
     .preview-img {
       max-height: 164px;
       border-radius: var(--radius-md);
       object-fit: contain;
       border: 1px solid var(--color-border);
+    }
+
+    /* ✕ button shown on top-right corner of uploaded image */
+    .dz-clear-btn {
+      position: absolute;
+      top: -8px;
+      right: -8px;
+      width: 22px;
+      height: 22px;
+      border-radius: var(--radius-full);
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
+      color: var(--color-text-muted);
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      box-shadow: var(--shadow-md);
+      transition: background var(--transition), color var(--transition), border-color var(--transition);
+      z-index: 5;
+    }
+
+    .dz-clear-btn:hover {
+      background: var(--color-error-highlight);
+      color: var(--color-error);
+      border-color: color-mix(in oklch, var(--color-error) 40%, transparent);
     }
 
     /* Description textarea */
@@ -1485,14 +1516,34 @@
                   <label class="form-label" for="fileInput">Receipt Image</label>
                   <div class="drop-zone" id="dropZone" tabindex="0" role="button"
                     aria-label="Drop receipt image or click to upload">
+                    <!-- File input stays in DOM at all times; hidden behind preview when active -->
                     <input type="file" id="fileInput" accept="image/*" aria-hidden="true" tabindex="-1" />
-                    <svg class="dz-icon" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                      stroke-width="1.5" aria-hidden="true">
-                      <rect x="3" y="3" width="18" height="18" rx="3" />
-                      <path d="M3 9h18M9 21V9" />
-                    </svg>
-                    <p class="dz-text">Drop receipt image here or click to upload</p>
-                    <p class="dz-sub">JPG, PNG, WEBP, HEIC supported</p>
+
+                    <!-- Placeholder shown when no image is loaded -->
+                    <div id="dzPlaceholder">
+                      <svg class="dz-icon" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        stroke-width="1.5" aria-hidden="true">
+                        <rect x="3" y="3" width="18" height="18" rx="3" />
+                        <path d="M3 9h18M9 21V9" />
+                      </svg>
+                      <p class="dz-text">Drop receipt image here or click to upload</p>
+                      <p class="dz-sub">JPG, PNG, WEBP, HEIC supported</p>
+                    </div>
+
+                    <!-- Preview shown after a file is selected -->
+                    <div id="dzPreview" style="display:none;">
+                      <div class="dz-preview-wrap">
+                        <img class="preview-img" id="previewImg" alt="Receipt preview" />
+                        <button class="dz-clear-btn" id="dzClearBtn" type="button"
+                          aria-label="Remove image" title="Remove image">
+                          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="3" aria-hidden="true">
+                            <line x1="18" y1="6" x2="6" y2="18" />
+                            <line x1="6" y1="6" x2="18" y2="18" />
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
@@ -1520,13 +1571,13 @@
         <!-- ====================================================
            RESULT SECTIONS (revealed after API call)
       ==================================================== -->
+
+        <!-- Error display — sits OUTSIDE result-sections so it shows independently -->
+        <div id="errorCard" class="error-card" style="display:none" role="alert">
+          <strong>Error: </strong><span id="errorMsg"></span>
+        </div>
+
         <div class="result-sections" id="resultSections">
-
-          <!-- Error display -->
-          <div id="errorCard" class="error-card" style="display:none" role="alert">
-            <strong>Error: </strong><span id="errorMsg"></span>
-          </div>
-
           <!-- ==========================================
              SECTION 2 — ATTENDEES
         ========================================== -->
@@ -1727,16 +1778,45 @@
     /* =====================================================================
        FILE UPLOAD
     ===================================================================== */
-    const dropZone = document.getElementById('dropZone');
-    const fileInput = document.getElementById('fileInput');
-    const descInput = document.getElementById('descInput');
-    const submitBtn = document.getElementById('submitBtn');
-    let base64Image = null;
+    const dropZone    = document.getElementById('dropZone');
+    const fileInput   = document.getElementById('fileInput');
+    const dzPlaceholder = document.getElementById('dzPlaceholder');
+    const dzPreview   = document.getElementById('dzPreview');
+    const previewImg  = document.getElementById('previewImg');
+    const descInput   = document.getElementById('descInput');
+    const submitBtn   = document.getElementById('submitBtn');
+    let base64Image   = null;
 
     function checkReady() {
       submitBtn.disabled = !(base64Image && descInput.value.trim());
     }
     descInput.addEventListener('input', checkReady);
+
+    // ---- Fix: the file input is absolutely positioned over the drop zone.
+    // When the user clicks, the input opens the dialog natively AND the click
+    // bubbles up to dropZone, which calls fileInput.click() a second time.
+    // Stopping propagation here breaks that double-trigger.
+    fileInput.addEventListener('click', e => e.stopPropagation());
+
+    function showPreview(url) {
+      previewImg.src = url;
+      dzPlaceholder.style.display = 'none';
+      dzPreview.style.display = 'block';
+      // Hide file input so it doesn't intercept clicks on the preview
+      fileInput.style.display = 'none';
+    }
+
+    function clearImage() {
+      base64Image = null;
+      previewImg.src = '';
+      fileInput.value = '';          // allow the same file to be re-selected
+      fileInput.style.display = ''; // restore file input
+      dzPreview.style.display = 'none';
+      dzPlaceholder.style.display = '';
+      dropZone.classList.remove('dragover');
+      checkReady();
+      resetResults();               // hide + wipe all result sections
+    }
 
     function handleFile(file) {
       if (!file || !file.type.startsWith('image/')) return;
@@ -1744,13 +1824,19 @@
       reader.onload = e => {
         const url = e.target.result;
         base64Image = url.split(',')[1];
-        dropZone.innerHTML = `<img class="preview-img" src="${url}" alt="Receipt preview" />`;
+        showPreview(url);
         checkReady();
       };
       reader.readAsDataURL(file);
     }
 
     fileInput.addEventListener('change', e => handleFile(e.target.files[0]));
+
+    document.getElementById('dzClearBtn').addEventListener('click', e => {
+      e.stopPropagation(); // don't bubble to dropZone
+      clearImage();
+    });
+
     dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
     dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
     dropZone.addEventListener('drop', e => {
@@ -1805,9 +1891,9 @@
         unlockNav();
         setTimeout(() => document.getElementById('attendees').scrollIntoView({ behavior: 'smooth', block: 'start' }), 250);
       } catch (err) {
-        errorCard.style.display = 'block';
+        // Show error independently — do NOT reveal result sections
+        document.getElementById('errorCard').style.display = 'block';
         document.getElementById('errorMsg').textContent = err.message;
-        document.getElementById('resultSections').classList.add('visible');
       } finally {
         submitBtn.disabled = false;
         submitBtn.setAttribute('aria-busy', 'false');
@@ -1818,6 +1904,46 @@
 
     function unlockNav() {
       navItems.forEach(n => n.classList.remove('locked'));
+    }
+
+    function resetResults() {
+      // Hide result sections
+      document.getElementById('resultSections').classList.remove('visible');
+
+      // Hide error card
+      document.getElementById('errorCard').style.display = 'none';
+      document.getElementById('errorMsg').textContent = '';
+
+      // Re-lock nav items (keep upload always accessible)
+      navItems.forEach(n => {
+        if (n.dataset.nav !== 'upload') n.classList.add('locked');
+      });
+      setActiveNav('upload');
+
+      // Wipe all populated content
+      document.getElementById('attendeesRow').innerHTML = '';
+      document.getElementById('flagsStack').innerHTML = '';
+      document.getElementById('itemsTableBody').innerHTML = '';
+      document.getElementById('perPersonGroups').innerHTML = '';
+      document.getElementById('settleUpSection').innerHTML = '';
+
+      // Reset reconciliation panel to initial dashes
+      document.getElementById('reconSum').textContent = '—';
+      document.getElementById('reconUnassigned').textContent = '—';
+      document.getElementById('reconGrand').textContent = '—';
+      const statusEl = document.getElementById('reconStatus');
+      statusEl.className = 'recon-status ok';
+      const CHECK = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>`;
+      statusEl.innerHTML = `${CHECK} Reconciled`;
+
+      // Reset grand total bar
+      document.getElementById('totalBarAmount').textContent = '—';
+      document.getElementById('totalBarSub').textContent = '';
+
+      // Clear app state
+      apiResult = null;
+      editedAssignments = {};
+      window._lastSnapshot = null;
     }
 
     /* =====================================================================
